@@ -1,0 +1,193 @@
+variables:
+  GIT_KEY: in_secret_vars
+  GIT_SSL_NO_VERIFY: "true"
+  GIT_STRATEGY: pull
+
+  BASE_NAME: kml_files
+  BASE_NAME_REPO: kml-files
+
+  GIT_URL: git@msk-hdp-gitlab.megafon.ru:space/smartcapex/kml_files.git
+
+  BUILD_IMAGE: msk-hdp-dn171.megafon.ru:5000/megafon/py3_jupyter_space:0.0.2
+  TEST_IMAGE: msk-hdp-dn171.megafon.ru:5000/megafon/spark_2_3_py_3.tbox:0.0.1
+  DEPLOY_IMAGE: msk-hdp-dn171.megafon.ru:5000/megafon/py3_jupyter_space:0.0.2
+
+  REPO_URL: http://msk-dwh-repo01.megafon.ru:8081/nexus/repository/pip-releases/
+
+  UNPACK_DIRECTORY: /tmp/build/$BASE_NAME
+  BASE_SPACES_DIRECTORY: /data/app_data/spaces
+
+  TEST_BASE_DIR: /d/tmp/tests/$BASE_NAME
+
+  REPOSITORY_TEST_ARTIFACT_PREFIX: com/megafon/itest
+  TEST_RELEASE_VERSION: 1.2.130
+  ITEST_NAME: kml_files
+  TEST_PROJECT: KmlFiles
+  TEST_PROJECT_RUNNER: run-test-kml-files.sh
+
+  REPO_M_URL: http://msk-dwh-repo01:8081/nexus/repository/maven-public
+
+stages:
+  - build
+  - test
+  - deploy
+
+build:
+  stage: build
+  image: $BUILD_IMAGE
+  tags:
+    - docker171
+  script:
+    # Build & create package
+    - echo "build"
+    - python3 setup.py sdist bdist_wheel
+  artifacts:
+    paths:
+      - dist/*
+  only:
+    - develop
+
+test:
+  stage: test
+  image: msk-hdp-dn171.megafon.ru:5000/megafon/dind_java_1_8:0.0.1
+  tags:
+    - docker171
+  script:
+    # Build & create package
+    - echo "build_post"
+#
+    - rm -rf $UNPACK_DIRECTORY
+    - mkdir -p $UNPACK_DIRECTORY
+#
+    - docker rmi $TEST_DOCKER_IMAGE_NAME:$TEST_TEG
+    # Unpack.
+    - tar xvzf dist/*.gz -C $UNPACK_DIRECTORY
+#
+    - find $UNPACK_DIRECTORY -iname \*.sh | xargs chmod +x
+#
+    - DESTINATION_TEST_DIR=$BASE_SPACES_DIRECTORY/test/${BASE_NAME}/develop
+    - rm -rf $DESTINATION_TEST_DIR
+    - mkdir -p $DESTINATION_TEST_DIR
+    - ARTIFACT_FOLDER_NAME=`ls $UNPACK_DIRECTORY`
+    - ARTIFACT_FOLDER=$UNPACK_DIRECTORY/$ARTIFACT_FOLDER_NAME
+    - cp -r $ARTIFACT_FOLDER/* $DESTINATION_TEST_DIR/
+    - echo $DESTINATION_TEST_DIR
+    - docker build -f $DESTINATION_TEST_DIR/Dockerfile -t $TEST_DOCKER_IMAGE_NAME:$TEST_TEG --build-arg URL_PATH=$URL_PATH .
+    - docker push $TEST_DOCKER_IMAGE_NAME:$TEST_TEG
+    # Place for downloading.
+    - rm -rf $TEST_BASE_DIR/archive
+    - mkdir -p $TEST_BASE_DIR/archive
+    # Place for unpacking.
+    - rm -rf $TEST_BASE_DIR/tests
+    - mkdir -p $TEST_BASE_DIR/tests
+    # Downloading & unpacking.
+    - ARTIFACT_TEST_URL=$REPOSITORY_TEST_ARTIFACT_PREFIX/assembly/$TEST_RELEASE_VERSION/assembly-$TEST_RELEASE_VERSION-$TEST_PROJECT.zip
+    - wget -nv $REPO_M_URL/$ARTIFACT_TEST_URL -P $TEST_BASE_DIR/archive
+    - unzip $TEST_BASE_DIR/archive/assembly-$TEST_RELEASE_VERSION-$TEST_PROJECT.zip -d $TEST_BASE_DIR/tests
+    # Run just test service.
+    - echo "test"
+    - cd $TEST_BASE_DIR/tests/$ITEST_NAME
+#
+    - echo $TNS_ADMIN
+    - mkdir /data/creds
+    - echo "#!/usr/bin/env bash\n"$'\r' > /data/creds/credsTest.sh
+    - echo "CREDS=\"MF_BIGDATA_SCORING_T/$M_DB_PASSWORD@exadata\"" >> /data/creds/credsTest.sh
+#
+    #- ls -s /data/app_data/tmp/kml_files/data/
+    #- ls -s /data/app_data/tmp/kml_files/result/
+#
+    - ./$TEST_PROJECT_RUNNER || EXIT_MEMORY=$? || exit 0
+#
+    - cd -
+    #- dir $TEST_BASE_DIR/tests/$ITEST_NAME
+    #- zip -r test_output.zip $TEST_BASE_DIR/tests/$ITEST_NAME/test-output
+    - exit $EXIT_MEMORY
+
+  artifacts:
+    paths:
+      - test_output.zip
+    when: always
+  only:
+    - develop
+    
+deploy_in_repository:
+    stage: deploy
+    image: $DEPLOY_IMAGE
+    tags:
+      - docker171
+    script:
+#
+      - rm -rf dist
+#
+      - echo "deploy"
+#
+      - git remote set-url origin $GIT_URL
+      - mkdir -p ~/.ssh
+      - eval $(ssh-agent -s) && ssh-add <(echo "$GIT_KEY")
+      - '[[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config'
+      - git config --global user.email "gitlab-runner@megafon.ru" && git config --global user.name "Gitlab CI"
+#
+      - git checkout develop
+      - git pull
+#
+      - git checkout -b release/$RELEASE_VERSION develop
+#
+      - echo $RELEASE_VERSION > version
+      - git add version
+      - git commit -m "[ci skip]"
+#
+      - python3 setup.py sdist bdist_wheel
+#
+      - python3 -m twine upload -u $P_USER -p $P_PASS --repository-url $REPO_URL dist/*
+#
+      - git tag "v_"$RELEASE_VERSION
+#
+      - git checkout develop
+      - git pull
+      - git merge --no-ff -m "[ci skip]" release/$RELEASE_VERSION
+      - git checkout master
+      - git pull
+      - git merge --no-ff -m "[ci skip]" release/$RELEASE_VERSION~1
+      - git checkout develop
+#
+      - echo "" > version
+      - git add version
+      - git commit -m "[ci skip]"
+#
+      - git push --all -f
+      - git push --tags -f
+#
+    when: manual
+
+deploy_docker:
+    stage: deploy
+    image: $DEPLOY_PUBLIC_IMAGE
+    tags:
+      - docker171
+    script:
+#
+      - rm -rf dist
+#
+      #- python3 setup.py sdist bdist_wheel
+#
+      - rm -rf $UNPACK_DIRECTORY
+      - mkdir -p $UNPACK_DIRECTORY
+      # Downloading & unpacking.
+      - ARTIFACT_URL=$REPO_URL/packages/$BASE_NAME_REPO/$RELEASE_VERSION/$BASE_NAME-$RELEASE_VERSION.tar.gz
+      - echo $ARTIFACT_URL
+      - mkdir -p dist
+      - wget -nv $ARTIFACT_URL -P dist
+      - tar xvzf dist/*.gz -C $UNPACK_DIRECTORY
+#
+      - find $UNPACK_DIRECTORY -iname \*.sh | xargs chmod +x
+#
+      - DESTINATION_DEV_DIR=$BASE_SPACES_DIRECTORY/test/${BASE_NAME}/develop
+      - rm -rf $DESTINATION_DEV_DIR
+      - mkdir -p $DESTINATION_DEV_DIR
+      - ARTIFACT_FOLDER_NAME=`ls $UNPACK_DIRECTORY`
+      - ARTIFACT_FOLDER=$UNPACK_DIRECTORY/$ARTIFACT_FOLDER_NAME
+      - cp -r $ARTIFACT_FOLDER/* $DESTINATION_DEV_DIR/
+      - echo $DESTINATION_DEV_DIR
+      - docker build -f $DESTINATION_DEV_DIR/Dockerfile -t $DOCKER_IMAGE_NAME:$RELEASE_VERSION --build-arg URL_PATH=$URL_PATH .
+      - docker push $DOCKER_IMAGE_NAME:$RELEASE_VERSION
+    when: manual

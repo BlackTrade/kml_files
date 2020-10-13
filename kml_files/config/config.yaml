@@ -1,0 +1,25 @@
+type_work: "prod"
+type_work_prod:
+  oracle:
+    database: "DWX"
+    oracle_home: "/opt/instantclient_18_3"
+    tns_admin: "/d/app_data/TNS"
+  path_result: None
+
+type_work: "test"
+type_work_test:
+   oracle:
+     database: "DWX"
+     oracle_home: "/u00/app/oracle/product/12.1.0/client_1"
+     tns_admin: "/data/share/.tns"
+
+   path_result: None
+
+type_work: "develop"
+type_work_develop:
+   oracle:
+     database: "DWX"
+     oracle_home: "/u00/app/oracle/product/12.1.0/client_1"
+     tns_admin: "/data/share/.tns"
+
+   path_result: None
